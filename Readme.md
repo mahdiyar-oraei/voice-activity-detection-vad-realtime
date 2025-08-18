@@ -1,5 +1,7 @@
 # _**Voice Activity Detection**_
 
+> Alternatives Similar Project Repository: [Voice Activity Detection Client Side](https://github.com/hanifabd/voice-activity-detection-client-side)
+
 ## **Brief About Voice Activity Detection (VAD)**
 [[Wikipedia](https://en.wikipedia.org/wiki/Voice_activity_detection)]
 
