@@ -1,64 +1,76 @@
+"""Realtime per-client VAD over websockets.
+
+Each binary websocket message is one 16 kHz mono s16le audio frame
+(20 ms = 320 samples = 640 bytes). For every frame the server replies
+with a one-character state:
+
+    1  voice activity in this frame
+    _  no voice activity
+    X  no voice activity for IDLE_CUT_SECONDS (end-of-utterance marker)
+
+Config via env: VAD_HOST (default 0.0.0.0), VAD_PORT (default 5000),
+VAD_MODE (webrtcvad aggressiveness 0-3, default 3).
+"""
 import asyncio
-import websockets
+import os
+
 import webrtcvad
-import sys
+import websockets
+
+SAMPLE_RATE = 16000
+FRAME_SIZE = 320  # samples per frame (20 ms @ 16 kHz)
+BYTES_PER_SAMPLE = 2
+FRAME_BYTES = FRAME_SIZE * BYTES_PER_SAMPLE
+IDLE_CUT_SECONDS = 0.5
+
+vad = webrtcvad.Vad(int(os.environ.get("VAD_MODE", "3")))
 
 
-vad = webrtcvad.Vad(3)
+class ClientState:
+    """Per-connection silence counter."""
 
-class AudioStream:
-    def __init__(self) -> None:
-        self.sample_rate = 16000
-        self.frame_size = 320
-        self.bytes_per_sample = 2
-        self.idle_cut = (self.sample_rate/2)/self.frame_size # chunk audio if no voice for 0.5 seconds
-        self.last_voice_activity = {}
+    idle_cut_frames = int(IDLE_CUT_SECONDS * SAMPLE_RATE / FRAME_SIZE)
 
-    def convert_buffer_size(self, audio_frame):
-        while len(audio_frame) < (self.frame_size * self.bytes_per_sample):
-            audio_frame = audio_frame + b'\x00'
-        return audio_frame
-    
-    def manage_client_idle(self, client_id):
-        if client_id not in self.last_voice_activity:
-            self.last_voice_activity[client_id] = 0
-        return self.last_voice_activity[client_id]
-    
-    def voice_activity_detection(self, audio_frame, client_id):
-        idle_time = self.manage_client_idle(client_id)
-        converted_frame = self.convert_buffer_size(audio_frame)
-        is_speech = vad.is_speech(converted_frame, sample_rate=self.sample_rate)
-        if is_speech:
-            self.last_voice_activity[client_id] = 0
+    def __init__(self):
+        self.idle_frames = 0
+
+    def process(self, audio_frame: bytes) -> str:
+        # Pad short frames with silence so webrtcvad accepts them
+        # (browser clients don't always deliver exact buffer sizes).
+        if len(audio_frame) < FRAME_BYTES:
+            audio_frame = audio_frame.ljust(FRAME_BYTES, b"\x00")
+        if vad.is_speech(audio_frame[:FRAME_BYTES], sample_rate=SAMPLE_RATE):
+            self.idle_frames = 0
             return "1"
-        else:
-            if idle_time == self.idle_cut:
-                self.last_voice_activity[client_id] = 0
-                return "X"
-            else:
-                self.last_voice_activity[client_id] += 1
-                return "_"
+        if self.idle_frames >= self.idle_cut_frames:
+            self.idle_frames = 0
+            return "X"
+        self.idle_frames += 1
+        return "_"
 
-audiostream = AudioStream()
-async def handler(websocket, path):
-    client_id = id(websocket)
-    print(f"WebSocket connection established for client {client_id} from {path}")
+
+async def handler(websocket):
+    peer = websocket.remote_address
+    print(f"client connected: {peer}")
+    state = ClientState()
     try:
         async for message in websocket:
-            is_active = audiostream.voice_activity_detection(message, client_id)
-            sys.stdout.write(is_active)
-            sys.stdout.flush()
+            if not isinstance(message, bytes):
+                continue
+            await websocket.send(state.process(message))
     except websockets.exceptions.ConnectionClosed:
-        print(f"WebSocket connection closed for client")
-    except Exception as e:
-        print(f"Error occurred: {e}")
+        pass
     finally:
-        await websocket.close()
+        print(f"client disconnected: {peer}")
+
 
 async def main():
-    PORT = 5000
-    async with websockets.serve(handler, 'localhost', PORT):
-        print(f"WebSocket server started at ws://localhost:{PORT}")
+    host = os.environ.get("VAD_HOST", "0.0.0.0")
+    port = int(os.environ.get("VAD_PORT", "5000"))
+    async with websockets.serve(handler, host, port):
+        print(f"VAD websocket server listening on ws://{host}:{port}")
         await asyncio.Future()
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())

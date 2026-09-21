@@ -1,9 +1,0 @@
-version: 2
-authtoken: <ngrokauth>
-tunnels:
-  first:
-    addr: 5000
-    proto: http    
-  second:
-    addr: 5001
-    proto: http
