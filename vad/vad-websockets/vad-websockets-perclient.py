@@ -13,33 +13,28 @@ VAD_MODE (webrtcvad aggressiveness 0-3, default 3).
 """
 import asyncio
 import os
+import sys
 
-import webrtcvad
 import websockets
 
-SAMPLE_RATE = 16000
-FRAME_SIZE = 320  # samples per frame (20 ms @ 16 kHz)
-BYTES_PER_SAMPLE = 2
-FRAME_BYTES = FRAME_SIZE * BYTES_PER_SAMPLE
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from vad_realtime import FrameVAD  # noqa: E402
+
 IDLE_CUT_SECONDS = 0.5
 
-vad = webrtcvad.Vad(int(os.environ.get("VAD_MODE", "3")))
+vad = FrameVAD(aggressiveness=int(os.environ.get("VAD_MODE", "3")))
 
 
 class ClientState:
     """Per-connection silence counter."""
 
-    idle_cut_frames = int(IDLE_CUT_SECONDS * SAMPLE_RATE / FRAME_SIZE)
+    idle_cut_frames = int(IDLE_CUT_SECONDS / vad.frame_duration)
 
     def __init__(self):
         self.idle_frames = 0
 
     def process(self, audio_frame: bytes) -> str:
-        # Pad short frames with silence so webrtcvad accepts them
-        # (browser clients don't always deliver exact buffer sizes).
-        if len(audio_frame) < FRAME_BYTES:
-            audio_frame = audio_frame.ljust(FRAME_BYTES, b"\x00")
-        if vad.is_speech(audio_frame[:FRAME_BYTES], sample_rate=SAMPLE_RATE):
+        if vad.is_speech(audio_frame):
             self.idle_frames = 0
             return "1"
         if self.idle_frames >= self.idle_cut_frames:
